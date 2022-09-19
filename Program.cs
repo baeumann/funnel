@@ -10,18 +10,25 @@ const string bootLogo = "    ______   __  __    _   __    _   __    ______    __
 Console.WriteLine("\n\n");
 Console.Write(bootLogo);
 Console.WriteLine("\n____________________________________________________________________________");
-Console.WriteLine("\nWELCOME TO FUNNEL MINECRAFT PROXY [Press any key to exit]\n\n\n");
+Console.WriteLine("\nWELCOME TO FUNNEL MINECRAFT PROXY [Press any key to exit]\nRESTART IF LOCAL SERVER SCAN IS ALREADY CONNECTED\n");
 
-if(args.Length < 1) {
-    Console.WriteLine(">> please enter an address for target server connection");
+Proxy proxy;
+if(args.Length >= 2) {
+    bool.TryParse(args[1], out Proxy.LOCAL_DEBUG);
 
-    Console.WriteLine("PROXY EXITING!");
-    Console.WriteLine("BYE!");
-} else {
-    var proxy = new Proxy(PORT, args[0]);
-
-    Console.ReadLine();
-    Console.WriteLine("PROXY EXITING!");
-    proxy.Close();
-    Console.WriteLine("BYE!");
+    if(Proxy.LOCAL_DEBUG) {
+        Console.WriteLine("DEBUG MODE, USING SERVER PORT " + Proxy.DEBUG_PORT);
+    }
 }
+if(args.Length < 1) {
+    Console.WriteLine("TARGET [localhost]\n");
+    proxy = new Proxy(PORT, "127.0.0.1");
+} else {
+    Console.WriteLine("TARGET [" + args[0] + "]\n");
+    proxy = new Proxy(PORT, args[0]);
+}
+
+Console.ReadLine();
+Console.WriteLine("PROXY EXITING!");
+proxy.Close();
+Console.WriteLine("BYE!");

@@ -5,48 +5,77 @@ namespace funnel.core
 {
     public class Proxy
     {
+        public static bool LOCAL_DEBUG = false;
+        public const int DEBUG_PORT = 5555;
         private int _port;
         private string _targetAddress;
         private TcpClient targetMinecraftServerConnection;
         private TcpListener sourceMinecraftClientConnection;
 
         private Thread readTargetThread;
-        private bool _keepReadTargetThreadRunning = true;
+        private bool _keepReadTargetThreadRunning = false;
 
         private Thread sourceClientListenerThread;
-        private bool _keepSourceClientListenerThreadRunning = true;
+        private bool _keepSourceClientListenerThreadRunning = false;
 
         private Thread readSourceThread;
-        private bool _keepReadSourceThreadRunning  = true;
+        private bool _keepReadSourceThreadRunning  = false;
 
         private TcpClient sourceClient;
 
         private bool _closing = false;
+
+        private bool _restarting = false;
+
+        private int _restartFailCounter = 0;
+
+        private bool _restartInProgress = false;
         public Proxy(int port, string address) {
             this._port = port;
             this._targetAddress = address;
-
-            targetMinecraftServerConnection = new TcpClient();
-
-            Console.WriteLine(">> starting to listen on port " + port + " for your minercraft client.");
 
             StartListeningForSourceClients();
         }
 
         private void StartClientListener() {
+            _restarting = true;
+            Console.WriteLine(">> listening for client on " + _port + ".");
+            targetMinecraftServerConnection = new TcpClient();
+
             sourceMinecraftClientConnection = new TcpListener(IPAddress.Parse("127.0.0.1"), _port);
             sourceMinecraftClientConnection.Start();
+            _restarting = false;
         }
 
         private void StartListeningForSourceClients() {
-            StartClientListener();
+            try {
+                Console.WriteLine(">> restarting...");
+                StartClientListener();
 
-            _keepSourceClientListenerThreadRunning = true;
-            sourceClientListenerThread = new Thread(ListenForSourceClient);
-            sourceClientListenerThread.Start();
+                _keepSourceClientListenerThreadRunning = true;
+                sourceClientListenerThread = new Thread(ListenForSourceClient);
+                sourceClientListenerThread.Start();
+            } catch(Exception) {
+                _restartFailCounter++;
+                if(_restartFailCounter >= 5) {
+                    Console.WriteLine(">> exiting because of too many failed restart attempts.");
+                    Close();
+                    System.Environment.Exit(0);
+                } else {
+                    Console.WriteLine(">> restarting failed > re-try.");
+                    Thread.Sleep(1000);
+                    _restartInProgress = false;
+                    Restart();
+                }
+
+            }
         }
 
         public void Restart() {
+            if(_restartInProgress) {
+                return;
+            }
+            _restartInProgress = true;
             if(_closing) {
                 return;
             }
@@ -54,6 +83,7 @@ namespace funnel.core
             DisconnectFromSource();
 
             StartListeningForSourceClients();
+            _restartInProgress = false;
         }
         public void Close() {
             _closing = true;
@@ -62,25 +92,40 @@ namespace funnel.core
         }
 
         private void ConnectToTarget() {
-            if(_targetAddress != null) {
+            if(!_restarting && _targetAddress != null && sourceClient != null && sourceClient.Connected) {
 
                 try {
-                    targetMinecraftServerConnection.Connect(_targetAddress, _port);
+                    IPAddress parsedAddress;
+                    if(IPAddress.TryParse(_targetAddress, out parsedAddress)) {
+
+                        if(LOCAL_DEBUG) {
+                            targetMinecraftServerConnection.Connect(parsedAddress, DEBUG_PORT);
+                        } else {
+                            targetMinecraftServerConnection.Connect(parsedAddress, _port);
+                        }
+                    } else {
+
+                        if(LOCAL_DEBUG) {
+                            targetMinecraftServerConnection.Connect(_targetAddress, DEBUG_PORT);
+                        } else {
+                            targetMinecraftServerConnection.Connect(_targetAddress, _port);
+                        }
+                    } 
+                    
                 } catch(Exception exception) {
-                    Console.WriteLine(">> connection to target [" + _targetAddress.ToString() + "] failed > " + exception.Message);
+                    Restart();
                     return;
                 }
 
-                if(!targetMinecraftServerConnection.Connected) {
-                    Console.WriteLine(">> lost connection to target client > " + _targetAddress.ToString());
-                    return;
-                }
+                Console.WriteLine(">> connected to target server [" + _targetAddress + "].");
 
                 PurgeReadTargetThread();
 
                 _keepReadTargetThreadRunning = true;
                 readTargetThread = new Thread(ReadTarget);
                 readTargetThread.Start();
+            } else {
+                Restart();
             }
         }
 
@@ -130,53 +175,61 @@ namespace funnel.core
         private void ListenForSourceClient() {
 
             while(_keepSourceClientListenerThreadRunning) {
-                
-                if(sourceMinecraftClientConnection.Pending()) {
-                    sourceClient = sourceMinecraftClientConnection.AcceptTcpClient();
-                    if(sourceClient != null) {
-                        Console.WriteLine(">> minecraft client connected.");
-                        PurgeSourceListenThread();
-                        PurgeReadSourceThread();
+                try {
+                    if(!_restarting && 
+                        !_keepReadSourceThreadRunning && 
+                        !_keepReadTargetThreadRunning && 
+                        sourceMinecraftClientConnection != null && 
+                        sourceMinecraftClientConnection.Pending()) {
 
-                        _keepReadSourceThreadRunning = true;
-                        readSourceThread = new Thread(ReadSource);
-                        readSourceThread.Start();
+                        sourceClient = sourceMinecraftClientConnection.AcceptTcpClient();
+                        if(sourceClient != null) {
+                            Console.WriteLine(">> minecraft client connected.");
+                            PurgeSourceListenThread();
+                            PurgeReadSourceThread();
 
-                        ConnectToTarget();
+                            _keepReadSourceThreadRunning = true;
+                            readSourceThread = new Thread(ReadSource);
+                            readSourceThread.Start();
+
+                            ConnectToTarget();
+                        }
                     }
+                } catch(Exception) {
+                    Restart();
                 }
 
-                Thread.Sleep(10);
+                Thread.Sleep(5);
             }
-
-            Console.WriteLine(">> stopped listening for source client.");
         }
 
         private void ReadSource() {
 
             while(_keepReadSourceThreadRunning) {
-                if(sourceClient.Connected && sourceClient.GetStream().DataAvailable) {
-                    
-                    var stream = sourceClient.GetStream();
-                    
-
-                    if(targetMinecraftServerConnection.Connected) {
+                try {
+                    if(!_restarting && sourceClient != null && sourceClient.Connected && sourceClient.GetStream().DataAvailable) {
                         
-                        byte[] buffer = new byte[sourceClient.Available];
-                        stream.Read(buffer, 0, sourceClient.Available);
+                        var stream = sourceClient.GetStream();
+                        
+                        if(targetMinecraftServerConnection.Connected) {
 
-                        //do manipulations on buffer, probably have to wait for whole packet before returning
-                        targetMinecraftServerConnection.GetStream().Write(buffer, 0, buffer.Length);
-                    } 
-                } else if(!sourceClient.Connected) {
-                    Console.WriteLine(">> lost source client connection, restarting...");
+                            byte[] buffer = new byte[sourceClient.Available];
+                            stream.Read(buffer, 0, buffer.Length);
+
+                            //do manipulations on buffer, probably have to wait for whole packet before returning
+
+                            targetMinecraftServerConnection.GetStream().Write(buffer, 0, buffer.Length);
+                        } 
+                    } else if(sourceClient == null || !sourceClient.Connected) {
+                        Restart();
+                    }
+
+                } catch(Exception) {
                     Restart();
                 }
 
-                Thread.Sleep(10);
+                Thread.Sleep(5);
             }
-
-            Console.WriteLine(">> stopped reading from source client.");
         }
 
         private void ReadTarget() {
@@ -187,20 +240,23 @@ namespace funnel.core
                     var stream = targetMinecraftServerConnection.GetStream();
 
                     if(sourceClient.Connected) {
-                        byte[] buffer = new byte[targetMinecraftServerConnection.Available];
-                        stream.Read(buffer, 0, targetMinecraftServerConnection.Available);
+                        try {
+                            byte[] buffer = new byte[targetMinecraftServerConnection.Available];
+                            stream.Read(buffer, 0, buffer.Length);
 
-                        sourceClient.GetStream().Write(buffer, 0, buffer.Length);
+                            sourceClient.GetStream().Write(buffer, 0, buffer.Length);
+                        } catch(Exception exception) {
+                            Restart();
+                        }
                     }
+
                 } else if(!targetMinecraftServerConnection.Connected) {
-                    Console.WriteLine(">> lost target server connection, restarting...");
                     Restart();
+                    break;
                 }
 
-                Thread.Sleep(10);
+                Thread.Sleep(5);
             }
-
-            Console.WriteLine(">> stopped reading from target server.");
         }
     }
 }
