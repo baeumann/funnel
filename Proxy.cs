@@ -26,14 +26,11 @@ namespace funnel_.core
         private int _restartFailCounter = 0;
         private bool _restartInProgress = false;
 
-        private IPacketFacility _sourcePacketFacility;
-        private IPacketFacility _targetPacketFacility;
+        private InjectorStream _upStream;
+        private InjectorStream _downStream;
         public Proxy(int port, string address) {
             this._port = port;
             this._targetAddress = address;
-
-            _sourcePacketFacility = new PacketFacility();
-            _targetPacketFacility = new PacketFacility();
 
             StartListeningForSourceClients();
         }
@@ -133,6 +130,9 @@ namespace funnel_.core
         private void DisconnectFromTarget() {
             PurgeReadTargetThread();
 
+            _downStream.Close();
+            _downStream = null;
+
             targetMinecraftServerConnection.Close();
             targetMinecraftServerConnection.Dispose();
         }
@@ -140,6 +140,9 @@ namespace funnel_.core
         private void DisconnectFromSource() {
             PurgeSourceListenThread();
             PurgeReadSourceThread();
+
+            _upStream.Close();
+            _upStream = null;
 
             sourceClient.Close();
             sourceClient.Dispose();
@@ -210,14 +213,13 @@ namespace funnel_.core
                 try {
                     if(!_restarting && sourceClient != null && sourceClient.Connected && sourceClient.GetStream().DataAvailable) {
                         
-                        var stream = sourceClient.GetStream();
-                        
+                        if(_upStream == null) {
+                            _upStream = new InjectorStream(sourceClient.GetStream());
+                        }
+
                         if(targetMinecraftServerConnection.Connected) {
-
                             byte[] buffer = new byte[sourceClient.Available];
-                            stream.Read(buffer, 0, buffer.Length);
-
-                            //_sourcePacketFacility.Add(buffer);
+                            _upStream.Read(buffer, 0, buffer.Length);
 
                             targetMinecraftServerConnection.GetStream().Write(buffer, 0, buffer.Length);
                         } 
@@ -229,7 +231,7 @@ namespace funnel_.core
                     Restart();
                 }
 
-                Thread.Sleep(5);
+                Thread.Sleep(10);
             }
         }
 
@@ -238,14 +240,14 @@ namespace funnel_.core
             while(_keepReadTargetThreadRunning) {
                 if(targetMinecraftServerConnection.Connected && targetMinecraftServerConnection.GetStream().DataAvailable) {
 
-                    var stream = targetMinecraftServerConnection.GetStream();
+                    if(_downStream == null) {
+                        _downStream = new InjectorStream(targetMinecraftServerConnection.GetStream());
+                    }
 
                     if(sourceClient.Connected) {
                         try {
                             byte[] buffer = new byte[targetMinecraftServerConnection.Available];
-                            stream.Read(buffer, 0, buffer.Length);
-
-                            _targetPacketFacility.Add(buffer);
+                            _downStream.Read(buffer, 0, buffer.Length);
 
                             sourceClient.GetStream().Write(buffer, 0, buffer.Length);
                         } catch(Exception) {
@@ -258,7 +260,7 @@ namespace funnel_.core
                     break;
                 }
 
-                Thread.Sleep(5);
+                Thread.Sleep(10);
             }
         }
     }
