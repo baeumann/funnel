@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 
-namespace funnel.core
+namespace funnel_.core
 {
     public class Proxy
     {
@@ -9,30 +9,31 @@ namespace funnel.core
         public const int DEBUG_PORT = 5555;
         private int _port;
         private string _targetAddress;
+
         private TcpClient targetMinecraftServerConnection;
         private TcpListener sourceMinecraftClientConnection;
 
         private Thread readTargetThread;
         private bool _keepReadTargetThreadRunning = false;
-
         private Thread sourceClientListenerThread;
         private bool _keepSourceClientListenerThreadRunning = false;
-
         private Thread readSourceThread;
         private bool _keepReadSourceThreadRunning  = false;
-
         private TcpClient sourceClient;
 
         private bool _closing = false;
-
         private bool _restarting = false;
-
         private int _restartFailCounter = 0;
-
         private bool _restartInProgress = false;
+
+        private IPacketFacility _sourcePacketFacility;
+        private IPacketFacility _targetPacketFacility;
         public Proxy(int port, string address) {
             this._port = port;
             this._targetAddress = address;
+
+            _sourcePacketFacility = new PacketFacility();
+            _targetPacketFacility = new PacketFacility();
 
             StartListeningForSourceClients();
         }
@@ -216,7 +217,7 @@ namespace funnel.core
                             byte[] buffer = new byte[sourceClient.Available];
                             stream.Read(buffer, 0, buffer.Length);
 
-                            //do manipulations on buffer, probably have to wait for whole packet before returning
+                            //_sourcePacketFacility.Add(buffer);
 
                             targetMinecraftServerConnection.GetStream().Write(buffer, 0, buffer.Length);
                         } 
@@ -244,8 +245,10 @@ namespace funnel.core
                             byte[] buffer = new byte[targetMinecraftServerConnection.Available];
                             stream.Read(buffer, 0, buffer.Length);
 
+                            _targetPacketFacility.Add(buffer);
+
                             sourceClient.GetStream().Write(buffer, 0, buffer.Length);
-                        } catch(Exception exception) {
+                        } catch(Exception) {
                             Restart();
                         }
                     }

@@ -1,5 +1,5 @@
 
-namespace funnel.core
+namespace funnel_.core
 {
     public class Dependency
     {

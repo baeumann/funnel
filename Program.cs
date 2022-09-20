@@ -1,11 +1,13 @@
 ﻿// See https://aka.ms/new-console-template for more information
 
 using System.Net;
-using funnel.core;
+using funnel_.core;
+using funnel_;
 
 //minecraft port
 const int PORT = 25565;
 const string bootLogo = "    ______   __  __    _   __    _   __    ______    __ \n   / ____/  / / / /   / | / /   / | / /   / ____/   / / \n  / /_     / / / /   /  |/ /   /  |/ /   / __/     / /  \n / __/    / /_/ /   / /|  /   / /|  /   / /___    / /___   _______\n/_/       \\____/   /_/ |_/   /_/ |_/   /_____/   /_____/  /______/\n                                                        ";
+
 
 Console.WriteLine("\n\n");
 Console.Write(bootLogo);
