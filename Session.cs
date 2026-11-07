@@ -4,14 +4,11 @@ using System.Linq;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using funnel_.protocol;
 
-using NetReadOnlyMemory = System.ReadOnlyMemory<byte>;
-
 namespace funnel_.core;
-
-public sealed record PacketInfo(Direction Direction, ConnectionState State, int Id, string? Name, byte[] Payload);
 
 public sealed class ProxyOptions
 {
@@ -20,9 +17,6 @@ public sealed class ProxyOptions
     public string? LogFilter;
 }
 
-/// <summary>
-/// Container für das globale Abfangen roher Netzwerk-Bytes von externen Klassen.
-/// </summary>
 public class PacketTrafficEventArgs : EventArgs
 {
     public Direction Direction { get; }
@@ -54,7 +48,6 @@ public sealed class Session : IDisposable
     private int _disposed;
     private int _byteCounter = 0;
 
-    // Microsoft Online-Auth Daten
     public static volatile string MicrosoftAccessToken = "";
     public static volatile string MicrosoftUuid = "";
 
@@ -65,22 +58,18 @@ public sealed class Session : IDisposable
     public int ProtocolVersion { get; private set; }
     public string? Username { get; private set; }
     public ConnectionState State => _state;
-    public bool Encrypted => _state == ConnectionState.Play || _state == ConnectionState.Configuration;
+    public bool Encrypted => _state == ConnectionState.Play;
     public int CompressionThreshold => -1;
 
-    // DER HOOK FÜR EXTERNE KLASSEN: Sendet den Datenstrom direkt an abonnierte Module
     public event Action<Session, PacketTrafficEventArgs>? OnPacketTraffic;
-
-#pragma warning disable CS0067
-    public event Action<Session, PacketInfo>? PacketReceived;
-#pragma warning restore CS0067
 
     public Session(TcpClient client, TcpClient server, PacketIds ids, ProxyOptions options, string targetHost, int targetPort)
     {
         _targetHost = targetHost; _targetPort = targetPort; _client = client; _server = server;
         _clientSourceStream = client.GetStream(); _clientDestinationStream = client.GetStream();
         _serverSourceStream = server.GetStream(); _serverDestinationStream = server.GetStream();
-        Ids = ids; _options = options; Bot = new Bot(this);
+        Ids = ids; _options = options;
+        Bot = new Bot(this);
     }
 
     public async Task RunAsync()
@@ -97,9 +86,6 @@ public sealed class Session : IDisposable
         _client.Close(); _server.Close();
     }
 
-    /// <summary>
-    /// Ermöglicht externen Klassen das direkte Injizieren unsignierter In-Game Pakete (PLAY-Modus).
-    /// </summary>
     public async Task InjectUnsignedPacketAsync(Direction direction, int packetId, byte[] payload)
     {
         var destination = direction == Direction.Serverbound ? _serverDestinationStream : _clientDestinationStream;
@@ -125,20 +111,20 @@ public sealed class Session : IDisposable
     public async Task SendAsync(Direction direction, byte[] payload, params string[] names)
     {
         var id = Ids.Find(_state, direction, names);
-        if (id == null) throw new InvalidOperationException($"No packet ID known for {string.Join("/", names)}");
+        if (id == null) throw new InvalidOperationException("No packet ID known for " + string.Join("/", names));
         await SendRawAsync(direction, id.Value, payload).ConfigureAwait(false);
     }
 
-    private async Task WriteBytesAsync(Stream destination, SemaphoreSlim gate, NetReadOnlyMemory data)
+    private async Task WriteBytesAsync(Stream destination, SemaphoreSlim gate, byte[] data)
     {
         await gate.WaitAsync(_cts.Token).ConfigureAwait(false);
-        try { await destination.WriteAsync(data, _cts.Token).ConfigureAwait(false); } finally { gate.Release(); }
+        try { await destination.WriteAsync(data.AsMemory(), _cts.Token).ConfigureAwait(false); } finally { gate.Release(); }
     }
 
     private async Task PumpAsync(Direction direction)
     {
         var ct = _cts.Token;
-        byte[] rawBuffer = new byte[8192];
+        byte[] rawBuffer = new byte[32768];
 
         try
         {
@@ -151,13 +137,12 @@ public sealed class Session : IDisposable
                 int bytesRead = await source.ReadAsync(rawBuffer.AsMemory(), ct).ConfigureAwait(false);
                 if (bytesRead <= 0) throw new EndOfStreamException();
 
-                // STATE-MACHINE SYNCHRONISATION
                 if (_state != ConnectionState.Play)
                 {
                     if (_state == ConnectionState.Handshake && direction == Direction.Serverbound)
                     {
                         _state = ConnectionState.Login;
-                        Say("[Protocol] Handshake parsed. Tunneling into secure Login phase...");
+                        Say("[Protocol] Handshake erfasst. Tunnel aktiv...");
                     }
                     
                     if (_state == ConnectionState.Login && direction == Direction.Clientbound)
@@ -166,24 +151,25 @@ public sealed class Session : IDisposable
                         if (_byteCounter > 15000) 
                         {
                             _state = ConnectionState.Play;
-                            ProtocolVersion = 777; // Kompatibilität für Commands.cs erzwingen
-                            Say("[Protocol] Configuration complete. Tunnel successfully advanced to live PLAY state.");
+                            ProtocolVersion = 777;
+                            Say("[Protocol] PLAY-Zustand erfolgreich erreicht. Tunnel stabil.");
                         }
                     }
                 }
 
-                // FUNKT DIE BYTES DIREKT AN ALLE EXTERNEN PLUGINS / INTERZEPTOREN REIN
-                if (OnPacketTraffic != null)
+                if (OnPacketTraffic != null && _state == ConnectionState.Play)
                 {
-                    int extractedId = rawBuffer[1]; // Roh-Paket-ID Schätzung aus dem Strom
-                    byte[] payloadData = rawBuffer.Skip(2).Take(bytesRead - 2).ToArray();
-                    var trafficArgs = new PacketTrafficEventArgs(direction, extractedId, payloadData, bytesRead);
-                    
-                    // Führt die externe Modul-Logik sicher asynchron aus
-                    OnPacketTraffic.Invoke(this, trafficArgs);
+                    try
+                    {
+                        int extractedId = rawBuffer[1]; 
+                        byte[] payloadData = rawBuffer.Skip(2).Take(bytesRead - 2).ToArray();
+                        var trafficArgs = new PacketTrafficEventArgs(direction, extractedId, payloadData, bytesRead);
+                        OnPacketTraffic.Invoke(this, trafficArgs);
+                    }
+                    catch { }
                 }
 
-                await WriteBytesAsync(destination, gate, rawBuffer.AsMemory(0, bytesRead)).ConfigureAwait(false);
+                await WriteBytesAsync(destination, gate, rawBuffer.Take(bytesRead).ToArray()).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }

@@ -6,10 +6,14 @@ using funnel_.protocol;
 
 namespace funnel_.core
 {
+    /// <summary>
+    /// Integriertes Standard-Plugin zur passiven Überwachung von Netzwerk-Metriken,
+    /// Byte-Durchsätzen und Entity-Aktivitäten im Terminal.
+    /// </summary>
     public class NetworkDiagnosticsPlugin : IProxyPlugin
     {
         public string Name => "NetworkDiagnostics";
-        public string Version => "1.1.6";
+        public string Version => "1.8.0";
 
         private long _totalBytesReceived = 0;
         private long _totalPacketsReceived = 0;
@@ -17,7 +21,7 @@ namespace funnel_.core
 
         public void OnLoad()
         {
-            Log("Erfolgreich als internes Diagnose-Werkzeug geladen.");
+            Log("Erfolgreich als passives Diagnose-Werkzeug geladen.");
         }
 
         public void OnSessionStarted(Session session)
@@ -48,6 +52,7 @@ namespace funnel_.core
             // Entity-Radar (Clientbound)
             if (args.Direction == Direction.Clientbound)
             {
+                // Paket 0x2D / 0x03 deklarieren das Spawnen/Teleportieren von Objekten
                 if (args.PacketId == 0x2D || args.PacketId == 0x03)
                 {
                     try
@@ -72,6 +77,7 @@ namespace funnel_.core
             }
         }
 
+        // Lokaler autarker VarInt-Reader zur absoluten Ausfallsicherheit
         private static int ReadLocalVarInt(Stream s)
         {
             int val = 0, size = 0, b;
