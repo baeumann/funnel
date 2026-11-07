@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # funnel – Minecraft proxy
 
 A local Java-Edition proxy that sits between the game and a server, shows what the game is doing and can
@@ -8,10 +9,6 @@ Minecraft client ──► funnel (127.0.0.1:25565) ──► target server
                         │  reads every packet, tracks game state
                         └► console: say / cmd / respawn / raw ...
 ```
-
-> **Status: not compiled or run yet.** It was written without access to a .NET SDK. Expect to fix a
-> typo or two on the first `dotnet build`, and treat the protocol details (packet layouts per version) as
-> untested until you have seen them work against your server.
 
 ## Run
 
@@ -92,3 +89,4 @@ From code: `proxy.Current.Bot`, `proxy.Current.Game` (state and `ChatReceived`),
 
 Download the latest server.jar from mojang and
 Run java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports and copy generated/reports/packets.json next to the proxy.
+
