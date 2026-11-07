@@ -1,2 +1,6 @@
 bin/*
 obj/*
+/generated
+/libraries
+/logs
+/versions

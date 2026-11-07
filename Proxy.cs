@@ -1,267 +1,159 @@
 using System.Net;
 using System.Net.Sockets;
+using funnel_.protocol;
 
 namespace funnel_.core
 {
+    /// <summary>
+    /// Listens for Minecraft clients on the local machine and connects each one to the target server.
+    /// Every client gets its own <see cref="Session"/>; the most recent one is exposed as <see cref="Current"/>.
+    /// </summary>
     public class Proxy
     {
         public static bool LOCAL_DEBUG = false;
         public const int DEBUG_PORT = 5555;
-        private int _port;
-        private string _targetAddress;
 
-        private TcpClient targetMinecraftServerConnection;
-        private TcpListener sourceMinecraftClientConnection;
+        private readonly int _port;
+        private readonly string _targetHost;
+        private readonly int? _targetPort;
+        private readonly TcpListener _listener;
+        private readonly List<Session> _sessions = new List<Session>();
+        private bool _closing;
 
-        private Thread readTargetThread;
-        private bool _keepReadTargetThreadRunning = false;
-        private Thread sourceClientListenerThread;
-        private bool _keepSourceClientListenerThreadRunning = false;
-        private Thread readSourceThread;
-        private bool _keepReadSourceThreadRunning  = false;
-        private TcpClient sourceClient;
+        public ProxyOptions Options { get; } = new ProxyOptions();
+        public PacketIds Ids { get; }
 
-        private bool _closing = false;
-        private bool _restarting = false;
-        private int _restartFailCounter = 0;
-        private bool _restartInProgress = false;
-
-        private InjectorStream _upStream;
-        private InjectorStream _downStream;
-        public Proxy(int port, string address) {
-            this._port = port;
-            this._targetAddress = address;
-
-            StartListeningForSourceClients();
+        public Proxy(int port, string address, PacketIds? ids = null)
+        {
+            _port = port;
+            (_targetHost, _targetPort) = SplitAddress(address);
+            Ids = ids ?? PacketIds.Empty();
+            _listener = new TcpListener(IPAddress.Parse("127.0.0.1"), _port);
         }
 
-        private void StartClientListener() {
-            _restarting = true;
+        /// <summary>The most recently connected client that is still online, or null.</summary>
+        public Session? Current
+        {
+            get
+            {
+                lock (_sessions)
+                {
+                    return _sessions.Count > 0 ? _sessions[_sessions.Count - 1] : null;
+                }
+            }
+        }
+
+        /// <summary>Starts listening. Throws SocketException if the port is already in use.</summary>
+        public void Start()
+        {
+            _listener.Start();
             Console.WriteLine(">> listening for client on " + _port + ".");
-            targetMinecraftServerConnection = new TcpClient();
-
-            sourceMinecraftClientConnection = new TcpListener(IPAddress.Parse("127.0.0.1"), _port);
-            sourceMinecraftClientConnection.Start();
-            _restarting = false;
+            _ = AcceptLoopAsync();
         }
 
-        private void StartListeningForSourceClients() {
-            try {
-                Console.WriteLine(">> restarting...");
-                StartClientListener();
-
-                _keepSourceClientListenerThreadRunning = true;
-                sourceClientListenerThread = new Thread(ListenForSourceClient);
-                sourceClientListenerThread.Start();
-            } catch(Exception) {
-                _restartFailCounter++;
-                if(_restartFailCounter >= 5) {
-                    Console.WriteLine(">> exiting because of too many failed restart attempts.");
-                    Close();
-                    System.Environment.Exit(0);
-                } else {
-                    Console.WriteLine(">> restarting failed > re-try.");
-                    Thread.Sleep(1000);
-                    _restartInProgress = false;
-                    Restart();
-                }
-
-            }
-        }
-
-        public void Restart() {
-            if(_restartInProgress) {
-                return;
-            }
-            _restartInProgress = true;
-            if(_closing) {
-                return;
-            }
-            DisconnectFromTarget();
-            DisconnectFromSource();
-
-            StartListeningForSourceClients();
-            _restartInProgress = false;
-        }
-        public void Close() {
+        public void Close()
+        {
             _closing = true;
-            DisconnectFromTarget();
-            DisconnectFromSource();
+            try { _listener.Stop(); } catch (SocketException) { }
+
+            Session[] sessions;
+            lock (_sessions)
+            {
+                sessions = _sessions.ToArray();
+            }
+            foreach (var session in sessions)
+            {
+                session.Dispose();
+            }
         }
 
-        private void ConnectToTarget() {
-            if(!_restarting && _targetAddress != null && sourceClient != null && sourceClient.Connected) {
+        private int TargetPort => LOCAL_DEBUG ? DEBUG_PORT : (_targetPort ?? _port);
 
-                try {
-                    IPAddress parsedAddress;
-                    if(IPAddress.TryParse(_targetAddress, out parsedAddress)) {
-
-                        if(LOCAL_DEBUG) {
-                            targetMinecraftServerConnection.Connect(parsedAddress, DEBUG_PORT);
-                        } else {
-                            targetMinecraftServerConnection.Connect(parsedAddress, _port);
-                        }
-                    } else {
-
-                        if(LOCAL_DEBUG) {
-                            targetMinecraftServerConnection.Connect(_targetAddress, DEBUG_PORT);
-                        } else {
-                            targetMinecraftServerConnection.Connect(_targetAddress, _port);
-                        }
-                    } 
-                    
-                } catch(Exception exception) {
-                    Restart();
-                    return;
+        private async Task AcceptLoopAsync()
+        {
+            while (!_closing)
+            {
+                TcpClient client;
+                try
+                {
+                    client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
                 }
-
-                Console.WriteLine(">> connected to target server [" + _targetAddress + "].");
-
-                PurgeReadTargetThread();
-
-                _keepReadTargetThreadRunning = true;
-                readTargetThread = new Thread(ReadTarget);
-                readTargetThread.Start();
-            } else {
-                Restart();
-            }
-        }
-
-        private void DisconnectFromTarget() {
-            PurgeReadTargetThread();
-
-            _downStream.Close();
-            _downStream = null;
-
-            targetMinecraftServerConnection.Close();
-            targetMinecraftServerConnection.Dispose();
-        }
-
-        private void DisconnectFromSource() {
-            PurgeSourceListenThread();
-            PurgeReadSourceThread();
-
-            _upStream.Close();
-            _upStream = null;
-
-            sourceClient.Close();
-            sourceClient.Dispose();
-            sourceMinecraftClientConnection.Stop();
-        }
-
-        private void PurgeReadTargetThread() {
-            if(readTargetThread != null) {
-                _keepReadTargetThreadRunning = false;
-
-                //wait 50ms to let thread exit
-                Thread.Sleep(50);
-            }
-        }
-
-        private void PurgeReadSourceThread() {
-            if(readSourceThread != null) {
-                _keepReadSourceThreadRunning = false;
-
-                //wait 50ms to let thread exit
-                Thread.Sleep(50);
-            }
-        }
-
-        private void PurgeSourceListenThread() {
-            if(sourceClientListenerThread != null) {
-                _keepSourceClientListenerThreadRunning = false;
-
-                //wait 50ms to let thread exit
-                Thread.Sleep(50);
-            }
-        }
-
-        private void ListenForSourceClient() {
-
-            while(_keepSourceClientListenerThreadRunning) {
-                try {
-                    if(!_restarting && 
-                        !_keepReadSourceThreadRunning && 
-                        !_keepReadTargetThreadRunning && 
-                        sourceMinecraftClientConnection != null && 
-                        sourceMinecraftClientConnection.Pending()) {
-
-                        sourceClient = sourceMinecraftClientConnection.AcceptTcpClient();
-                        if(sourceClient != null) {
-                            Console.WriteLine(">> minecraft client connected.");
-                            PurgeSourceListenThread();
-                            PurgeReadSourceThread();
-
-                            _keepReadSourceThreadRunning = true;
-                            readSourceThread = new Thread(ReadSource);
-                            readSourceThread.Start();
-
-                            ConnectToTarget();
-                        }
-                    }
-                } catch(Exception) {
-                    Restart();
-                }
-
-                Thread.Sleep(5);
-            }
-        }
-
-        private void ReadSource() {
-
-            while(_keepReadSourceThreadRunning) {
-                try {
-                    if(!_restarting && sourceClient != null && sourceClient.Connected && sourceClient.GetStream().DataAvailable) {
-                        
-                        if(_upStream == null) {
-                            _upStream = new InjectorStream(sourceClient.GetStream());
-                        }
-
-                        if(targetMinecraftServerConnection.Connected) {
-                            byte[] buffer = new byte[sourceClient.Available];
-                            _upStream.Read(buffer, 0, buffer.Length);
-
-                            targetMinecraftServerConnection.GetStream().Write(buffer, 0, buffer.Length);
-                        } 
-                    } else if(sourceClient == null || !sourceClient.Connected) {
-                        Restart();
-                    }
-
-                } catch(Exception) {
-                    Restart();
-                }
-
-                Thread.Sleep(10);
-            }
-        }
-
-        private void ReadTarget() {
-
-            while(_keepReadTargetThreadRunning) {
-                if(targetMinecraftServerConnection.Connected && targetMinecraftServerConnection.GetStream().DataAvailable) {
-
-                    if(_downStream == null) {
-                        _downStream = new InjectorStream(targetMinecraftServerConnection.GetStream());
-                    }
-
-                    if(sourceClient.Connected) {
-                        try {
-                            byte[] buffer = new byte[targetMinecraftServerConnection.Available];
-                            _downStream.Read(buffer, 0, buffer.Length);
-
-                            sourceClient.GetStream().Write(buffer, 0, buffer.Length);
-                        } catch(Exception) {
-                            Restart();
-                        }
-                    }
-
-                } else if(!targetMinecraftServerConnection.Connected) {
-                    Restart();
+                catch (ObjectDisposedException)
+                {
                     break;
                 }
+                catch (SocketException)
+                {
+                    if (_closing) { break; }
+                    continue;
+                }
 
-                Thread.Sleep(10);
+                _ = HandleClientAsync(client);
             }
+        }
+
+        private async Task HandleClientAsync(TcpClient client)
+        {
+            client.NoDelay = true;
+            var server = new TcpClient { NoDelay = true };
+
+            try
+            {
+                await server.ConnectAsync(_targetHost, TargetPort).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(">> could not connect to target [" + _targetHost + ":" + TargetPort + "]: " + ex.Message);
+                client.Close();
+                server.Close();
+                return;
+            }
+
+            Console.WriteLine(">> minecraft client connected, linked to target server [" + _targetHost + ":" + TargetPort + "].");
+
+            var session = new Session(client, server, Ids, Options, _targetHost, TargetPort);
+            session.Game.ChatReceived += line =>
+            {
+                if (Options.ShowChat)
+                {
+                    Console.WriteLine("[chat] " + line);
+                }
+            };
+
+            lock (_sessions)
+            {
+                _sessions.Add(session);
+            }
+
+            try
+            {
+                await session.RunAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_sessions)
+                {
+                    _sessions.Remove(session);
+                }
+                session.Dispose();
+                Console.WriteLine(">> [" + session.Number + "] connection closed.");
+            }
+        }
+
+        private static (string host, int? port) SplitAddress(string address)
+        {
+            if (IPAddress.TryParse(address, out _))
+            {
+                return (address, null);
+            }
+
+            int colon = address.LastIndexOf(':');
+            if (colon > 0 && int.TryParse(address.Substring(colon + 1), out int port))
+            {
+                return (address.Substring(0, colon), port);
+            }
+
+            return (address, null);
         }
     }
 }
