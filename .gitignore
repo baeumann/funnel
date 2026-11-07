@@ -4,3 +4,20 @@ obj/*
 /libraries
 /logs
 /versions
+
+# =========================================================================
+# ZUSÄTZLICHE C# / NET TEMPORÄRDATEIEN
+# =========================================================================
+# Versteckte IDE-Ordner (VS und VS Code)
+.vs/
+.vscode/
+
+# Lokale Benutzerkonfigurationen und Tool-Caches
+*.user
+*.userosscache
+*.sln.docstates
+
+# .NET Core Diagnose-Tools und Crash-Dumps
+*.swp
+*~
+/server
