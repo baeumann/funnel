@@ -9,11 +9,11 @@ namespace funnel_.core
     public class NetworkDiagnosticsPlugin : IProxyPlugin
     {
         public string Name => "NetworkDiagnostics";
-        public string Version => "1.0.0";
+        public string Version => "1.1.6";
 
         private long _totalBytesReceived = 0;
         private long _totalPacketsReceived = 0;
-        private readonly HashSet<int> _loadedEntities = new();
+        private readonly HashSet<int> _loadedEntities = new HashSet<int>();
 
         public void OnLoad()
         {
@@ -22,7 +22,7 @@ namespace funnel_.core
 
         public void OnSessionStarted(Session session)
         {
-            Log($"Starte Netzwerk-Überwachung für Session #{session.Number}...");
+            Log("Starte Netzwerk-Ueberwachung fuer Session #" + session.Number);
 
             session.OnPacketTraffic += (sender, args) =>
             {
@@ -38,12 +38,14 @@ namespace funnel_.core
             _totalPacketsReceived++;
             _totalBytesReceived += args.Length;
 
+            // Alle 500 Pakete einen kurzen Status-Bericht im Terminal ausgeben
             if (_totalPacketsReceived % 500 == 0)
             {
                 double kbytes = _totalBytesReceived / 1024.0;
-                Log($"[Session #{session.Number}] Durchsatz: {kbytes:F2} KB | Pakete: {_totalPacketsReceived} | Entities: {_loadedEntities.Count}");
+                Log("[Session #" + session.Number + "] Durchsatz: " + kbytes.ToString("F2") + " KB | Pakete gesamt: " + _totalPacketsReceived + " | Aktive Entities: " + _loadedEntities.Count);
             }
 
+            // Entity-Radar (Clientbound)
             if (args.Direction == Direction.Clientbound)
             {
                 if (args.PacketId == 0x2D || args.PacketId == 0x03)
@@ -51,57 +53,40 @@ namespace funnel_.core
                     try
                     {
                         byte[] payloadCopy = args.Payload.ToArray();
-                        using var ms = new MemoryStream(payloadCopy);
-                        int entityId = MinecraftStreamUtil.ReadVarInt(ms);
-
-                        if (entityId > 0)
+                        using (var ms = new MemoryStream(payloadCopy))
                         {
-                            bool isNew;
-                            lock (_loadedEntities)
+                            int entityId = ReadLocalVarInt(ms);
+                            if (entityId > 0)
                             {
-                                isNew = _loadedEntities.Add(entityId);
-                            }
-                            
-                            if (isNew)
-                            {
-                                Log($"Server deklariert neues Objekt -> Entity-ID: {entityId}");
+                                bool isNew;
+                                lock (_loadedEntities) { isNew = _loadedEntities.Add(entityId); }
+                                if (isNew)
+                                {
+                                    Log("Server deklariert neues Objekt -> Entity-ID: " + entityId);
+                                }
                             }
                         }
                     }
                     catch { }
-                }
-                else if (args.PacketId == 0x40)
-                {
-                    try
-                    {
-                        byte[] payloadCopy = args.Payload.ToArray();
-                        using var ms = new MemoryStream(payloadCopy);
-                        int count = MinecraftStreamUtil.ReadVarInt(ms);
-                        for (int i = 0; i < count; i++)
-                        {
-                            int entityId = MinecraftStreamUtil.ReadVarInt(ms);
-                            lock (_loadedEntities) 
-                            { 
-                                _loadedEntities.Remove(entityId); 
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-
-            if (args.Direction == Direction.Serverbound)
-            {
-                if (args.PacketId == 0x30)
-                {
-                    Log("Spieler führt unsignierte Interaktion aus (Swing Arm Paket gesendet)");
                 }
             }
         }
 
+        private static int ReadLocalVarInt(Stream s)
+        {
+            int val = 0, size = 0, b;
+            while (((b = s.ReadByte()) & 0x80) == 0x80) 
+            { 
+                if (b == -1) throw new EndOfStreamException(); 
+                val |= (b & 0x7F) << (size++ * 7); 
+                if (size > 5) throw new InvalidDataException(); 
+            }
+            return val | ((b & 0x7F) << (size * 7));
+        }
+
         private void Log(string message)
         {
-            Console.WriteLine($"[{Name}] {message}");
+            Console.WriteLine("[" + Name + "] " + message);
         }
     }
 }
