@@ -27,6 +27,13 @@ class Program
         Console.WriteLine("\nWELCOME TO FUNNEL MINECRAFT PROXY [type 'help' for commands, 'quit' to exit]\n");
 
         // =========================================================================
+        // INITIALISIERE DAS INTERNE DIAGNOSE-PLUGIN
+        // =========================================================================
+        var internalDiag = new funnel_.core.NetworkDiagnosticsPlugin();
+        internalDiag.OnLoad();
+        funnel_.core.Proxy.OnSessionStarted += internalDiag.OnSessionStarted;
+
+        // =========================================================================
         // DYNAMISCHER RUNTIME/.DLL PLUGIN LOADER
         // =========================================================================
         LoadExternalPlugins();
@@ -57,16 +64,18 @@ class Program
             string cachePath = Path.Combine(AppContext.BaseDirectory, "msal_cache.bin");
 
             var app = PublicClientApplicationBuilder.Create(azureClientId)
-                .WithTenantId("consumers") 
-                .WithRedirectUri("https://microsoftonline.com") 
+                .WithTenantId("consumers")
+                .WithRedirectUri("https://microsoftonline.com")
                 .Build();
 
-            app.UserTokenCache.SetBeforeAccess(notificationArgs => {
-                if (File.Exists(cachePath)) 
+            app.UserTokenCache.SetBeforeAccess(notificationArgs =>
+            {
+                if (File.Exists(cachePath))
                     notificationArgs.TokenCache.DeserializeMsalV3(File.ReadAllBytes(cachePath));
             });
-            app.UserTokenCache.SetAfterAccess(notificationArgs => {
-                if (notificationArgs.HasStateChanged) 
+            app.UserTokenCache.SetAfterAccess(notificationArgs =>
+            {
+                if (notificationArgs.HasStateChanged)
                     File.WriteAllBytes(cachePath, notificationArgs.TokenCache.SerializeMsalV3());
             });
 
@@ -84,12 +93,12 @@ class Program
             {
                 Console.WriteLine("[Auth] Kein gültiger Cache deklariert. Starte Device-Code-Verfahren...");
                 authResult = await app.AcquireTokenWithDeviceCode(
-                    new[] { "XboxLive.signin", "offline_access" }, 
+                    new[] { "XboxLive.signin", "offline_access" },
                     deviceCodeResult =>
                     {
                         Console.WriteLine("\n==================================================");
                         Console.WriteLine("[Auth] ACTION REQUIRED: MICROSOFT ANMELDUNG ERFORDERLICH!");
-                        Console.WriteLine($"[Auth] {deviceCodeResult.Message}"); 
+                        Console.WriteLine($"[Auth] {deviceCodeResult.Message}");
                         Console.WriteLine("==================================================\n");
 
                         try
@@ -156,14 +165,29 @@ class Program
             return;
         }
 
+        // =========================================================================
+        // ROBUSTE INTERAKTIVE EINGABESCHLEIFE (Verhindert Auto-Exits)
+        // =========================================================================
         var commands = new Commands(proxy);
-        while (true)
+
+        if (!Console.IsInputRedirected)
         {
-            string? line = Console.ReadLine();
-            if (line == null) break;
-            if (line.Trim().Length == 0) continue;
-            try { if (!await commands.RunAsync(line)) break; }
-            catch (Exception ex) { Console.WriteLine("!! " + ex.Message); }
+            while (true)
+            {
+                string? line = Console.ReadLine();
+                if (line == null) break;
+                if (line.Trim().Length == 0) continue;
+                try { if (!await commands.RunAsync(line)) break; }
+                catch (Exception ex) { Console.WriteLine("!! " + ex.Message); }
+            }
+        }
+        else
+        {
+            Console.WriteLine("[Core] Eingabestrom umgeleitet. Proxy läuft im autarken Hintergrund-Modus.");
+            while (true)
+            {
+                await Task.Delay(1000);
+            }
         }
 
         Console.WriteLine("PROXY EXITING!");
@@ -172,8 +196,8 @@ class Program
     }
 
     /// <summary>
-    /// Scans the /plugins directory, loads all .dll files, detects types implementing IProxyPlugin
-    /// and safely links them directly to the Core proxy pipeline.
+    /// Scans the /plugins directory, loads all .dll assemblies at runtime,
+    /// filters for types implementing IProxyPlugin, and links them to the core.
     /// </summary>
     private static void LoadExternalPlugins()
     {
@@ -190,35 +214,28 @@ class Program
         {
             try
             {
-                // Lädt die .dll-Assembly zur Laufzeit asynchron in den RAM-Kontext
                 Assembly assembly = Assembly.LoadFrom(dllPath);
-                
-                // Sucht nach Klassen, die das IProxyPlugin-Interface implementieren
                 var pluginTypes = assembly.GetTypes()
-                    .Where(t => typeof(IProxyPlugin).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
-
+.Where(t => typeof(IProxyPlugin).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
                 foreach (var type in pluginTypes)
                 {
                     if (Activator.CreateInstance(type) is IProxyPlugin plugin)
                     {
                         plugin.OnLoad();
-                        
-                        // Klinke das geladene Plugin direkt an das globale Event der Proxy.cs
                         Proxy.OnSessionStarted += plugin.OnSessionStarted;
-                        
                         _loadedPlugins.Add(plugin);
-                        Console.WriteLine($"[Loader] SUCCESS: Module '{plugin.Name}' (v{plugin.Version}) loaded from file!");
+                        Console.WriteLine($"[Loader] SUCCESS: Module '{plugin.Name}' (v{plugin.Version}) loaded successfully.");
                     }
                 }
             }
             catch (Exception ex)
             {
-Console.WriteLine($"[Loader] Error loading plugin assembly from '{Path.GetFileName(dllPath)}': {ex.Message}");
-}
-}
-if (_loadedPlugins.Count == 0)
-{
-Console.WriteLine("[Loader] No external .dll plugins found. Core proxy running in baseline production mode.");
-}
-}
+                Console.WriteLine($"[Loader] Error loading plugin assembly '{Path.GetFileName(dllPath)}': {ex.Message}");
+            }
+        }
+        if (_loadedPlugins.Count == 0)
+        {
+            Console.WriteLine("[Loader] No external .dll plugins found. Core proxy running in baseline production mode.");
+        }
+    }
 }
