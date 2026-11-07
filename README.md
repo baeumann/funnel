@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # funnel – Minecraft proxy
 
 A local Java-Edition proxy that sits between the game and a server, shows what the game is doing and can

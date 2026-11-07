@@ -21,3 +21,7 @@ obj/*
 *.swp
 *~
 /server
+
+# Microsoft/MSAL Sitzungs-Tokens ignorieren
+msal_cache.bin
+*.bin

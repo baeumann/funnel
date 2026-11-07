@@ -1,5 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 using funnel_.protocol;
 
 namespace funnel_.core
@@ -12,6 +17,9 @@ namespace funnel_.core
     {
         public static bool LOCAL_DEBUG = false;
         public const int DEBUG_PORT = 5555;
+
+        // OFFICIELLES PIPELINE-EVENT: Erlaubt externen Plugins, sich in neue Verbindungen einzuklinken
+        public static event Action<Session>? OnSessionStarted;
 
         private readonly int _port;
         private readonly string _targetHost;
@@ -60,6 +68,7 @@ namespace funnel_.core
             lock (_sessions)
             {
                 sessions = _sessions.ToArray();
+                _sessions.Clear();
             }
             foreach (var session in sessions)
             {
@@ -112,13 +121,20 @@ namespace funnel_.core
             Console.WriteLine(">> minecraft client connected, linked to target server [" + _targetHost + ":" + TargetPort + "].");
 
             var session = new Session(client, server, Ids, Options, _targetHost, TargetPort);
-            session.Game.ChatReceived += line =>
+            
+            // Löst den globalen API-Hook für registrierte Module aus
+            OnSessionStarted?.Invoke(session);
+
+            if (session.Game != null)
             {
-                if (Options.ShowChat)
+                session.Game.ChatReceived += line =>
                 {
-                    Console.WriteLine("[chat] " + line);
-                }
-            };
+                    if (Options.ShowChat)
+                    {
+                        Console.WriteLine("[chat] " + line);
+                    }
+                };
+            }
 
             lock (_sessions)
             {
@@ -128,6 +144,10 @@ namespace funnel_.core
             try
             {
                 await session.RunAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($">> [{session.Number}] Stream-Fehler in Session-Pipeline: {ex.Message}");
             }
             finally
             {
