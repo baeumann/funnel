@@ -3,19 +3,16 @@
 A local Java-Edition proxy that sits between the game and a server, shows what the game is doing and can
 send extra packets "as the player" (a bot).
 
-```
+Verwende Code mit Vorsicht.
 Minecraft client ──► funnel (127.0.0.1:25565) ──► target server
-                        │  reads every packet, tracks game state
-                        └► console: say / cmd / respawn / raw ...
-```
+│  reads every packet, tracks game state
+└► console: say / cmd / respawn / raw ...
 
 ## Run
 
-```
 dotnet run -- [target[:port]] [debug] [--ids=packets.json]
 dotnet run -- 192.168.1.20            # remote server on 25565
 dotnet run -- localhost true          # debug: target port 5555
-```
 
 Point Minecraft at `localhost:25565`. Type `help` in the proxy console.
 
@@ -24,9 +21,7 @@ Point Minecraft at `localhost:25565`. Type `help` in the proxy console.
 Packet IDs change with nearly every Minecraft release, so they are not hard coded. Generate the table for your
 exact server version with the vanilla data generator:
 
-```
 java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports
-```
 
 Copy `generated/reports/packets.json` next to the program (or pass `--ids=`). If your version does not produce
 that file, write a small one by hand – `log on` shows the numeric ID of every packet:
@@ -61,15 +56,64 @@ only naming, decoding and named injection are off. `raw` works without a table.
 From code: `proxy.Current.Bot`, `proxy.Current.Game` (state and `ChatReceived`), and the
 `Session.PacketReceived` event for your own handlers. New decoders belong in `GameState.Apply`.
 
-## What changed from the old version
+## How to Write a Plugin (.dll)
 
-* Forwarding is now **per packet** (length-prefixed frames, zlib compression tracked from Set Compression),
-  not per chunk of bytes. That is what makes it safe to insert packets: the old `InjectorStream` could not know
-  where a packet starts, so it is no longer used and can be deleted. `Dependency.cs` is unchanged and unused.
-* Each connecting client gets its own `Session`; the old restart logic (null dereferences when no
-  connection existed yet, polling with sleeps) is gone.
-* `Utilities.Decompress` wrote into a decompression stream, which always throws; it now reads.
-* Handles the 1.20.2+ configuration phase.
+The proxy features a modular, runtime reflection-based plugin engine. You can compile your own custom logic (e.g., entity radars, block automations, loggers) into a separate `.dll` file, place it next to the program, and the core proxy will load it dynamically on startup without changing any core files.
+
+### 1. Create a Plugin Project
+Create a new C# Class Library (`.NET Standard 2.1` or `.NET 6.0+`) in your IDE and add a project reference to the `funnel.csproj` core assembly.
+
+### 2. Implement the `IProxyPlugin` Interface
+Create a class inside your project that extends `IProxyPlugin`. This interface gives you full access to new active connection slots and raw network streams:
+
+```csharp
+using System;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using funnel_.core;
+using funnel_.protocol;
+
+namespace MyCustomModule;
+
+public class SamplePlugin : IProxyPlugin
+{
+    public string Name => "TelemetryPlugin";
+    public string Version => "1.0.0";
+
+    // Called once globally when the proxy core scans and loads the .dll file
+    public void OnLoad()
+    {
+        Console.WriteLine(\$"[Plugin-Load] {Name} v{Version} successfully mounted into RAM!");
+    }
+
+    // Called automatically every time a new Minecraft client links to a server
+    public void OnSessionStarted(Session session)
+    {
+        Console.WriteLine(\$"[Plugin-Session] Hooking into live pipeline of Session #{session.Number}");
+
+        // Subscribe to the unbent cleartext packet traffic stream inside the RAM
+        session.OnPacketTraffic += (sender, args) =>
+        {
+            if (sender.State == ConnectionState.Play)
+            {
+                // Run your custom non-blocking asynchronous interaction logic here
+                if (args.Direction == Direction.Clientbound && args.PacketId == 0x2D)
+                {
+                    Console.WriteLine(\$"[Plugin-Radar] Unsigned entity activity spotted -> ID: {args.Payload.FirstOrDefault()}");
+                }
+            }
+        };
+    }
+}
+```
+
+### 3. Deploying your Module
+1. Build/Compile your plugin project to generate the `MyCustomModule.dll` file.
+2. Create a folder named `plugins` directly in the execution directory of funnel (next to your compiled `funnel.exe` or inside `bin/Debug/netX.X/`).
+3. Drop your compiled `.dll` file inside that `/plugins` folder.
+4. Launch the proxy using `dotnet run`. The loader console will report:  
+   `[Loader] SUCCESS: Module 'TelemetryPlugin' (v1.0.0) loaded from file!`
 
 ## Limits you should know about
 
@@ -83,9 +127,4 @@ From code: `proxy.Current.Bot`, `proxy.Current.Game` (state and `ChatReceived`),
 * **Decoders per version:** player chat (1.19.3+), system chat (JSON up to 1.20.2, NBT from 1.20.3), position
   (changed in 1.21.2) are covered; anything newer that changed layout will simply not decode.
 * **Position injection** (`pos`) is reported next to the real client's own movement, so the server sees both.
-* Do not use bot packets on servers whose rules forbid automation or modified clients.
-
-
-Download the latest server.jar from mojang and
-Run java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports and copy generated/reports/packets.json next to the proxy.
-
+* Do not use bot packets on servers whose rules forbid automation or modified cli
